@@ -576,7 +576,11 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
 	}
 	a.sign = func(ctx context.Context, req *http.Request, body []byte) error { return nil }
 	a.transport = func(req *http.Request) (*http.Response, error) { return pluginFetch(pp, acct.Key, req) }
-	p := Provider{ID: id, Name: name, Icon: PluginIcon(pp), Account: a}
+	p := Provider{ID: id, Name: name, Icon: PluginIcon(pp), Account: a,
+		// the plugin's own raw switch (auth.options' "raw"): every request
+		// goes as the client made it, in the gateway's raw path (raw.go),
+		// and the plugin's fetch sets the account's binding headers alone
+		Raw: settings.Load().PluginOptions[pp.ID]["raw"]}
 	if c, ok := movedCards[pp.ID]; ok && PluginServes(pp.ID) {
 		p.Name, p.Icon, p.Website = c.name, c.icon, c.site // as the built-in was
 		m, _ := MigrationOf(pp.ID)
