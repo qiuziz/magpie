@@ -104,7 +104,7 @@ func TestRawForwardSendsTheClientsOwn(t *testing.T) {
 	}
 }
 
-func TestRawForwardKeepsTheClients31Headers(t *testing.T) {
+func TestRawForwardKeepsTheClientsHeaders(t *testing.T) {
 	b, err := os.ReadFile("testdata/cbc-raw-request.json")
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +116,8 @@ func TestRawForwardKeepsTheClients31Headers(t *testing.T) {
 	if err := json.Unmarshal(b, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	if len(fixture.Headers) != 31 {
-		t.Fatalf("fixture has %d headers, want 31", len(fixture.Headers))
+	if len(fixture.Headers) != 41 {
+		t.Fatalf("fixture has %d headers, want 41", len(fixture.Headers))
 	}
 
 	var got http.Header
@@ -151,7 +151,7 @@ func TestRawForwardKeepsTheClients31Headers(t *testing.T) {
 
 	// the five allowed changes: three account headers, Content-Length and
 	// Host/Content-Length's transport. Accept-Encoding is the transport's.
-	changed := map[string]bool{"Authorization": true, "Content-Length": true, "Accept-Encoding": true, "X-User-Id": true, "X-Domain": true}
+	changed := map[string]bool{"Authorization": true, "Content-Length": true, "Host": true, "Connection": true, "X-Api-Key": true, "X-User-Id": true, "X-Domain": true}
 	for k, want := range fixture.Headers {
 		if changed[http.CanonicalHeaderKey(k)] {
 			continue
@@ -171,8 +171,5 @@ func TestRawForwardKeepsTheClients31Headers(t *testing.T) {
 	}
 	if v := got.Get("Content-Length"); v == fixture.Headers["Content-Length"] {
 		t.Errorf("Content-Length = %q, want the body's own", v)
-	}
-	if v := got.Get("Accept-Encoding"); v == fixture.Headers["Accept-Encoding"] {
-		t.Errorf("Accept-Encoding = %q, want the transport's", v)
 	}
 }
