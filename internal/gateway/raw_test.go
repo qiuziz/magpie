@@ -54,7 +54,8 @@ func TestRawForwardSendsTheClientsOwn(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := provider.Provider{ID: "raw", Name: "Raw", Chat: upstream.URL, Key: "key", Raw: true}
+	p := provider.Provider{ID: "raw", Name: "Raw", Chat: upstream.URL, Key: "key", Raw: true,
+		Headers: map[string]string{"X-User-Id": "uid-lxh", "X-Domain": "copilot.tencent.com"}}
 	s := &Server{client: upstream.Client()}
 	body := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"developer","content":"kept"}]}`)
 	raw := &rawRequest{body: body, header: http.Header{
@@ -83,6 +84,8 @@ func TestRawForwardSendsTheClientsOwn(t *testing.T) {
 		"X-Ide-Type":      "CodeBuddy",
 		"X-Agent-Purpose": "conversation",
 		"X-Custom":        "kept",
+		"X-User-Id":       "uid-lxh",
+		"X-Domain":        "copilot.tencent.com",
 	} {
 		if v := got.header.Get(k); v != want {
 			t.Errorf("%s = %q, want %q", k, v, want)

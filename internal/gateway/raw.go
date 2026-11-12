@@ -75,6 +75,12 @@ func (s *Server) rawForward(w http.ResponseWriter, r *http.Request, p provider.P
 		}
 		req.Header[k] = append([]string(nil), vs...)
 	}
+	// the headers the user gave the provider have the last word: a raw
+	// provider's account binding rides in them (a plugin's fetch sets its
+	// own instead)
+	for k, v := range p.SentHeaders(ctx) {
+		req.Header.Set(k, v)
+	}
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
