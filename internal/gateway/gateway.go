@@ -2179,6 +2179,11 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// the client's own request, kept before the gateway rewrites it: a
+		// provider with Raw takes these bytes and headers as they came
+		// (raw.go). decodedBody has already undone a Content-Encoding, so
+		// the bytes are the client's JSON; its own envelope stays out.
+		r = r.WithContext(withRawRequest(r.Context(), &rawRequest{body: slices.Clone(body), header: r.Header.Clone()}))
 		var err error
 		var model string
 		body, model, err = requestModel(body)
@@ -4261,7 +4266,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					defer release()
 					defer hw.watch()()
 					defer notePhase(ctx, "upstream")()
-					call.Status, call.Error = s.attempt(hw, r.WithContext(ctx), from, c.p, c.model, attemptBody, &call)
+					// a raw provider takes the client's own bytes, not the
+					// body the gateway fitted for this try (raw.go)
+					sent := attemptBody
+					if raw := rawRequestOf(ctx); raw != nil && c.p.Raw && from == provider.Chat {
+						sent = raw.body
+					}
+					call.Status, call.Error = s.attempt(hw, r.WithContext(ctx), from, c.p, c.model, sent, &call)
 				}()
 			}
 			stop()
@@ -5625,6 +5636,11 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// the tier the reply said, unknown where the vendor's word tells
 	// nothing (servedTierAt)
 	defer func() { call.Usage.Tier = servedTierAt(p.VendorHost(), call.Usage.Tier) }()
+	// a provider with Raw takes the client's own request: its bytes and
+	// headers, the account's binding headers the only change (raw.go)
+	if raw := rawRequestOf(r.Context()); raw != nil && p.Raw && from == provider.Chat {
+		return s.rawForward(w, r, p, model, raw, call)
+	}
 	// Normalize for the actual destination, separately on each fallback.
 	// Native ChatGPT accounts accept standalone tool outputs themselves.
 	if from == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {

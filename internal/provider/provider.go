@@ -349,6 +349,13 @@ type Provider struct {
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
 
+	// Raw has a client's request go to it as the client sent it: its bytes
+	// and its headers, with only the account's binding headers set by the
+	// plugin's fetch. For a provider behind a plugin that must see the
+	// client's own fingerprint (a WorkBuddy AI account used through
+	// magpie, raw.go). Off, the default, keeps the fitting below.
+	Raw bool `json:"raw,omitempty"`
+
 	// ImageFilesOff, `image-files=off`, has DeepSeek's own API sent an
 	// agent's inline images inline on every turn. By default each goes up
 	// once through DeepSeek's Files API, for a day, and the turns name it

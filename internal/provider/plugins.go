@@ -662,6 +662,12 @@ func (p Provider) Origin(ctx context.Context) string {
 // client asked for (minimal, xhigh), for the plugin to pick its variant by.
 const EffortHeader = "X-Magpie-Effort"
 
+// RawHeader is the header a plugin's fetch is told the request goes as the
+// client sent it: the plugin sets only the account's binding headers and
+// leaves the body and the client's own headers alone (the WorkBuddy
+// plugin's raw switch). It is deleted before the request goes on.
+const RawHeader = "X-Magpie-Raw"
+
 type effortKey struct{}
 
 // WithEffort is ctx carrying the effort a request asks of a plugin's
@@ -688,6 +694,9 @@ func pluginFetch(pp plugin.Provider, account string, req *http.Request) (*http.R
 		body = buf.Bytes()
 	}
 	rest := strings.TrimPrefix(req.URL.String(), pluginBase+pp.ID)
+	// a raw request goes with its own model name: the plugin's list may
+	// name a model by an api id, which an ordinary request is rewritten to
+	raw := req.Header.Get(RawHeader) != ""
 	model := bodyModel(body)
 	codeAssist := strings.HasPrefix(rest, "/v1internal:")
 	if codeAssist {
@@ -713,7 +722,7 @@ func pluginFetch(pp plugin.Provider, account string, req *http.Request) (*http.R
 		m = plugin.Model{ID: model, NPM: pp.NPM}
 	}
 	api := modelAPIID(m)
-	if api != model && !codeAssist {
+	if !raw && api != model && !codeAssist {
 		body = withModel(body, api)
 	}
 	o, err := plugin.LoaderOptions(ctx, pp.ID, account)
