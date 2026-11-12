@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // A gateway key may give models names of its own (access.Key.Aliases,
@@ -64,8 +66,15 @@ func withPath(r *http.Request, path string) *http.Request {
 }
 
 // aliasBody swaps the model of a JSON body, every other byte as it was.
+// A raw request's bytes go to the vendor as the client sent them, so its
+// name is put in routeModelHeader instead: routing reads the alias, and
+// the body is left untouched (a gzip body is decoded only to read it).
 func aliasBody(r *http.Request, who access.Identity) *http.Request {
-	if r.Body == nil || r.Body == http.NoBody || r.Header.Get("Content-Encoding") != "" {
+	if r.Body == nil || r.Body == http.NoBody {
+		return r
+	}
+	raw := r.Header.Get(provider.RawHeader) != ""
+	if !raw && r.Header.Get("Content-Encoding") != "" {
 		return r
 	}
 	// a form or a multipart body is no JSON; a client that says no type
@@ -83,9 +92,18 @@ func aliasBody(r *http.Request, who access.Identity) *http.Request {
 	if err != nil || len(buf) > maxAliasBody {
 		return r
 	}
-	real, ok := who.AliasFor(modelOf(buf))
+	asked := buf
+	if raw {
+		if decoded, err := decodedCopy(buf, r.Header, maxAliasBody); err == nil {
+			asked = decoded
+		}
+	}
+	real, ok := who.AliasFor(modelOf(asked))
 	if !ok {
 		return r
+	}
+	if raw {
+		return withRouteModel(r, real)
 	}
 	buf = rewriteModel(buf, real)
 	r.Body = io.NopCloser(bytes.NewReader(buf))
@@ -94,6 +112,19 @@ func aliasBody(r *http.Request, who access.Identity) *http.Request {
 	r.Header.Set("Content-Length", strconv.Itoa(len(buf)))
 	r.GetBody = nil
 	return r
+}
+
+// routeModel is the model a key's alias names for a raw request: the body
+// keeps the name the client sent, routing reads this one.
+type routeModelKey struct{}
+
+func withRouteModel(r *http.Request, model string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), routeModelKey{}, model))
+}
+
+func routeModelOf(ctx context.Context) string {
+	m, _ := ctx.Value(routeModelKey{}).(string)
+	return m
 }
 
 // aliasNames puts the names a key gives models where the models were in a
