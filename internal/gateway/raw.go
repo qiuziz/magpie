@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
-	"github.com/yetone/magpie/internal/usage"
 )
 
 // rawRequest is the client's request as it came, kept before the gateway
@@ -146,11 +145,10 @@ func (s *Server) rawForward(w http.ResponseWriter, r *http.Request, p provider.P
 		u = sn.usage()
 	}
 	call.Usage = u
+	// the call is recorded once, by the gateway's own path: this only
+	// marks it, so the Usage page tells a raw call apart and counts it once
+	call.Kind = "raw"
 	s.record(*call)
-	appendUsage(r, usage.Record{Operation: "raw", Time: start, Agent: call.Agent, Via: call.Via, Provider: p.ID, Host: p.Where(), Model: call.Model, Requested: call.Model, Served: u.Served, Upstream: u.Upstream,
-		ProviderKeyID: provider.KeyID(p.Key), ProviderKeyName: p.KeyName,
-		Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, CacheWrite1h: u.CacheWrite1h, Reasoning: u.Reasoning,
-		Millis: call.Millis, Status: call.Status, Session: sessionOf(r.Header)})
 	return res.StatusCode, ""
 }
 
