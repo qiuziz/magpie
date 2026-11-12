@@ -1,0 +1,69 @@
+# Builds this fork's raw passthrough: the branch rebased on yetone/magpie's
+# main, a linux/amd64 CLI, and a release the server pulls. The vendor never
+# sees a compile happen on the server (1.7 GB of RAM), and the branch never
+# drifts far from upstream.
+name: raw release
+
+on:
+  schedule:
+    - cron: "43 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [feat-raw-passthrough]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: raw-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'qiuziz/magpie'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat-raw-passthrough
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Rebase on upstream's main
+        run: |
+          git config user.name "raw release"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add upstream https://github.com/yetone/magpie.git || true
+          git fetch upstream main --tags
+          if ! git rebase upstream/main; then
+            git rebase --abort
+            echo "::error::the raw branch no longer rebases on upstream's main: fix it by hand"
+            exit 1
+          fi
+          git push --force-with-lease origin HEAD:feat-raw-passthrough
+
+      - name: Build
+        run: |
+          UP="$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo v0.0.0)"
+          VERSION="${UP#v}+raw.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nogui -trimpath \
+            -ldflags "-s -w -X main.version=$VERSION" \
+            -o magpie-cli-linux-amd64 .
+          sha256sum magpie-cli-linux-amd64 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="raw-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            --title "raw ${VERSION}" \
+            --notes "magpie ${VERSION} for cbc.qiuz.site: the fork's raw passthrough, built from feat-raw-passthrough rebased on yetone/magpie's main." \
+            magpie-cli-linux-amd64 SHA256SUMS
