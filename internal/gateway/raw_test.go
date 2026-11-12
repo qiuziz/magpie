@@ -260,3 +260,66 @@ func TestRawAsked(t *testing.T) {
 		t.Error("rawAsked(X-Magpie-Raw: 1) = false")
 	}
 }
+
+// TestRawForwardKeepsTheRealCBCRequest is the acceptance fixture: the 41
+// headers CBC actually sends and its gzip body go to the upstream as they
+// came, the account headers the only change.
+func TestRawForwardKeepsTheRealCBCRequest(t *testing.T) {
+	b, err := os.ReadFile("testdata/cbc-raw-request.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+	}
+	if err := json.Unmarshal(b, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	wire := gzipped(t, []byte(fixture.Body))
+
+	var got http.Header
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	p := provider.Provider{ID: "cbc", Name: "CBC", Chat: upstream.URL, Key: "key", Raw: true,
+		Headers: map[string]string{"X-User-Id": "uid-account", "X-Domain": "copilot.tencent.com"}}
+	s := &Server{client: upstream.Client()}
+	h := http.Header{}
+	for k, v := range fixture.Headers {
+		h.Set(k, v)
+	}
+	h.Set("Content-Encoding", "gzip")
+	raw := &rawRequest{body: wire, header: h}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r = r.WithContext(withRawRequest(r.Context(), raw))
+	status, msg := s.rawForward(rec, r, p, "deepseek-v4.1-flash", raw, &Call{Time: time.Now(), Model: "deepseek-v4.1-flash"})
+	if status != http.StatusOK || msg != "" {
+		t.Fatalf("rawForward = %d %q, want 200", status, msg)
+	}
+	if !bytes.Equal(gotBody, wire) {
+		t.Errorf("body = %d bytes, want the client's %d gzip bytes", len(gotBody), len(wire))
+	}
+	if v := got.Get("Content-Encoding"); v != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip", v)
+	}
+	changed := map[string]bool{"Authorization": true, "Content-Length": true, "Host": true, "Connection": true, "X-Api-Key": true, "X-User-Id": true, "X-Domain": true}
+	for k, want := range fixture.Headers {
+		if changed[http.CanonicalHeaderKey(k)] || k == "Accept-Encoding" || k == "Content-Encoding" {
+			continue
+		}
+		if v := got.Get(k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+	if v := got.Get("X-User-Id"); v != "uid-account" {
+		t.Errorf("X-User-Id = %q, want the provider's", v)
+	}
+}
