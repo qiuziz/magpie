@@ -63,7 +63,10 @@ func (s *Server) rawForward(w http.ResponseWriter, r *http.Request, p provider.P
 	start := call.Time
 	ctx := s.metered(p.Via(r.Context()), p, "")
 	upstream := provider.UpstreamNameIn(wiresOf(ctx), p.ID, model)
-	body := rewriteModel(raw.body, upstream)
+	// the client's own bytes, still gzipped when it sent them so: the
+	// model it names is the one it asked for (the plugin's model list is
+	// not applied on this path either)
+	body := raw.body
 	path := upstreamPath(p, provider.Chat, upstream)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Base(provider.Chat)+path, bytes.NewReader(body))
 	if err != nil {
@@ -149,4 +152,12 @@ func (s *Server) rawForward(w http.ResponseWriter, r *http.Request, p provider.P
 		Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, CacheWrite1h: u.CacheWrite1h, Reasoning: u.Reasoning,
 		Millis: call.Millis, Status: call.Status, Session: sessionOf(r.Header)})
 	return res.StatusCode, ""
+}
+
+// rawAsked says the request itself asks for the raw path: a front proxy
+// that knows the client (nginx at cbc.qiuz.site, say) marks it with
+// X-Magpie-Raw, so the path doesn't depend on a provider's saved switch.
+// The header is magpie's own and never goes on to the vendor.
+func rawAsked(h http.Header) bool {
+	return strings.TrimSpace(h.Get(provider.RawHeader)) != ""
 }

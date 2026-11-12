@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -95,7 +96,18 @@ func (s *Server) requestBody(w http.ResponseWriter, r *http.Request, from provid
 	return s.readRequestBody(w, r, from, 0)
 }
 
+// rawRequestBody reads the body as it came on the wire: a gzip or zstd
+// body stays compressed, and Content-Encoding stays on the request. It is
+// for the raw path (raw.go), which forwards the client's own bytes.
+func (s *Server) rawRequestBody(w http.ResponseWriter, r *http.Request, from provider.Protocol) ([]byte, bool) {
+	return s.readRequestBodyKind(w, r, from, 0, true)
+}
+
 func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request, from provider.Protocol, limit int64) ([]byte, bool) {
+	return s.readRequestBodyKind(w, r, from, limit, false)
+}
+
+func (s *Server) readRequestBodyKind(w http.ResponseWriter, r *http.Request, from provider.Protocol, limit int64, raw bool) ([]byte, bool) {
 	limits := s.requestLimits
 	if limit > 0 {
 		limits.body = limit
@@ -112,7 +124,7 @@ func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request, from pr
 			return nil, false
 		}
 	}
-	body, status, err := readBoundedRequestBody(w, r, limits)
+	body, status, err := readBoundedRequestKind(w, r, limits, raw)
 	if err != nil {
 		writeError(w, from, status, err.Error())
 		return nil, false
@@ -212,6 +224,13 @@ func (z *pooledZstd) Close() error {
 // Read one bounded body, decoded; callers choose their protocol's error
 // envelope. The limit holds for the decoded bytes too.
 func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits requestLimits) ([]byte, int, error) {
+	return readBoundedRequestKind(w, r, limits, false)
+}
+
+// readBoundedRequestKind reads one bounded body. raw keeps the wire bytes
+// and the Content-Encoding that says how they are encoded; the decoded
+// path undoes it and drops the header.
+func readBoundedRequestKind(w http.ResponseWriter, r *http.Request, limits requestLimits, raw bool) ([]byte, int, error) {
 	controller := http.NewResponseController(w)
 	reject := func(status int, err error) ([]byte, int, error) {
 		// Do not let net/http drain a rejected body from a stalled client.
@@ -245,18 +264,26 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 	}
 	// the wire length is the body's length only when it is sent as it is
 	declared := r.ContentLength
-	if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc != "" && enc != "identity" {
-		declared = -1
+	if !raw {
+		if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc != "" && enc != "identity" {
+			declared = -1
+		}
 	}
 	original := r.Body
 	r.Body = &idleBody{original, controller, limits.readTimeout}
 	defer func() { r.Body = original }()
-	rd, err := decodedBody(r)
-	if errors.Is(err, errBodyEncoding) {
-		return reject(http.StatusUnsupportedMediaType, err)
-	}
-	if err != nil {
-		return readFailure(err)
+	var rd io.ReadCloser
+	if raw {
+		rd = io.NopCloser(r.Body)
+	} else {
+		var err error
+		rd, err = decodedBody(r)
+		if errors.Is(err, errBodyEncoding) {
+			return reject(http.StatusUnsupportedMediaType, err)
+		}
+		if err != nil {
+			return readFailure(err)
+		}
 	}
 	defer rd.Close()
 	// Limit decoded bytes as well.
@@ -267,9 +294,36 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 	if err != nil {
 		return readFailure(err)
 	}
+	if raw {
+		// the client's own bytes go on as they came: no text rewrite
+		return body, 0, nil
+	}
 	// text that isn't, as U+FFFD, before anything routes or forwards it
 	// (textBody, laincatx on X)
 	return textBody(r.Header, body), 0, nil
+}
+
+// decodedCopy decodes a raw body for routing alone: the raw path forwards
+// the wire bytes, but its model and shape are read from the JSON they
+// encode. The header is left as it came (Content-Encoding stays).
+func decodedCopy(body []byte, header http.Header, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = defaultBodyLimit
+	}
+	r := &http.Request{Header: header.Clone(), Body: io.NopCloser(bytes.NewReader(body))}
+	rd, err := decodedBody(r)
+	if err != nil {
+		return nil, err
+	}
+	defer rd.Close()
+	out, err := readSized(io.LimitReader(rd, limit+1), int64(len(body)))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > limit {
+		return nil, overLimit(limit)
+	}
+	return out, nil
 }
 
 // sizedReadFirst is the most readSized sets aside before a byte has come:

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -171,5 +172,91 @@ func TestRawForwardKeepsTheClientsHeaders(t *testing.T) {
 	}
 	if v := got.Get("Content-Length"); v == fixture.Headers["Content-Length"] {
 		t.Errorf("Content-Length = %q, want the body's own", v)
+	}
+}
+
+// gzipped is body as CBC sends it: its chat body arrives gzip-compressed,
+// Content-Encoding naming the encoding.
+func gzipped(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw := gzip.NewWriter(&b)
+	if _, err := zw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func TestRawForwardKeepsTheClientsCompressedBytes(t *testing.T) {
+	var gotBody []byte
+	var gotEnc string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotEnc = r.Header.Get("Content-Encoding")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	p := provider.Provider{ID: "raw-gzip", Name: "RawGzip", Chat: upstream.URL, Key: "key", Raw: true,
+		Headers: map[string]string{"X-User-Id": "uid-account", "X-Domain": "copilot.tencent.com"}}
+	s := &Server{client: upstream.Client()}
+	plain := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"OK"}]}`)
+	wire := gzipped(t, plain)
+	raw := &rawRequest{body: wire, header: http.Header{
+		"Content-Encoding": {"gzip"},
+		"Content-Type":     {"application/json"},
+		"User-Agent":       {"CLI/2.180.0 CodeBuddy/2.180.0"},
+	}}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r = r.WithContext(withRawRequest(r.Context(), raw))
+	status, msg := s.rawForward(rec, r, p, "deepseek-v4.1-flash", raw, &Call{Time: time.Now(), Model: "deepseek-v4.1-flash"})
+	if status != http.StatusOK || msg != "" {
+		t.Fatalf("rawForward = %d %q, want 200", status, msg)
+	}
+	if !bytes.Equal(gotBody, wire) {
+		t.Errorf("body = %d bytes, want the client's own %d gzip bytes", len(gotBody), len(wire))
+	}
+	if gotEnc != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip", gotEnc)
+	}
+}
+
+func TestRawRequestBodyKeepsTheEncoding(t *testing.T) {
+	plain := []byte(`{"model":"deepseek-v4.1-flash"}`)
+	wire := gzipped(t, plain)
+	r := httptest.NewRequest(http.MethodPost, "/v2/chat/completions", bytes.NewReader(wire))
+	r.Header.Set("Content-Encoding", "gzip")
+	r.ContentLength = int64(len(wire))
+	rec := httptest.NewRecorder()
+	body, status, err := readBoundedRequestKind(rec, r, requestLimits{}, true)
+	if err != nil || status != 0 {
+		t.Fatalf("readBoundedRequestKind = %d %v", status, err)
+	}
+	if !bytes.Equal(body, wire) {
+		t.Errorf("body = %d bytes, want the wire's %d", len(body), len(wire))
+	}
+	if enc := r.Header.Get("Content-Encoding"); enc != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip still set", enc)
+	}
+	decoded, err := decodedCopy(body, r.Header, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, plain) {
+		t.Errorf("decodedCopy = %q, want %q", decoded, plain)
+	}
+}
+
+func TestRawAsked(t *testing.T) {
+	if rawAsked(http.Header{}) {
+		t.Error("rawAsked(no header) = true")
+	}
+	if !rawAsked(http.Header{provider.RawHeader: {"1"}}) {
+		t.Error("rawAsked(X-Magpie-Raw: 1) = false")
 	}
 }
