@@ -3,9 +3,11 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -99,5 +101,78 @@ func TestRawForwardSendsTheClientsOwn(t *testing.T) {
 	}
 	if rec.Body.String() != "data: [DONE]\n\n" {
 		t.Errorf("reply = %q, want the upstream's stream", rec.Body.String())
+	}
+}
+
+func TestRawForwardKeepsTheClients31Headers(t *testing.T) {
+	b, err := os.ReadFile("testdata/cbc-raw-request.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+	}
+	if err := json.Unmarshal(b, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Headers) != 31 {
+		t.Fatalf("fixture has %d headers, want 31", len(fixture.Headers))
+	}
+
+	var got http.Header
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	p := provider.Provider{ID: "raw31", Name: "Raw31", Chat: upstream.URL, Key: "key", Raw: true,
+		Headers: map[string]string{"X-User-Id": "uid-account", "X-Domain": "copilot.tencent.com"}}
+	s := &Server{client: upstream.Client()}
+	h := http.Header{}
+	for k, v := range fixture.Headers {
+		h.Set(k, v)
+	}
+	raw := &rawRequest{body: []byte(fixture.Body), header: h}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r = r.WithContext(withRawRequest(r.Context(), raw))
+	status, msg := s.rawForward(rec, r, p, "deepseek-v4.1-flash", raw, &Call{Time: time.Now(), Model: "deepseek-v4.1-flash"})
+	if status != http.StatusOK || msg != "" {
+		t.Fatalf("rawForward = %d %q, want 200", status, msg)
+	}
+	if string(gotBody) != fixture.Body {
+		t.Errorf("body = %q, want the client's bytes", gotBody)
+	}
+
+	// the five allowed changes: three account headers, Content-Length and
+	// Host/Content-Length's transport. Accept-Encoding is the transport's.
+	changed := map[string]bool{"Authorization": true, "Content-Length": true, "Accept-Encoding": true, "X-User-Id": true, "X-Domain": true}
+	for k, want := range fixture.Headers {
+		if changed[http.CanonicalHeaderKey(k)] {
+			continue
+		}
+		if v := got.Get(k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+	if v := got.Get("Authorization"); v != "Bearer key" {
+		t.Errorf("Authorization = %q, want the provider's key", v)
+	}
+	if v := got.Get("X-User-Id"); v != "uid-account" {
+		t.Errorf("X-User-Id = %q, want the provider's", v)
+	}
+	if v := got.Get("X-Domain"); v != "copilot.tencent.com" {
+		t.Errorf("X-Domain = %q, want the provider's", v)
+	}
+	if v := got.Get("Content-Length"); v == fixture.Headers["Content-Length"] {
+		t.Errorf("Content-Length = %q, want the body's own", v)
+	}
+	if v := got.Get("Accept-Encoding"); v == fixture.Headers["Accept-Encoding"] {
+		t.Errorf("Accept-Encoding = %q, want the transport's", v)
 	}
 }
