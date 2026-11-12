@@ -2212,6 +2212,7 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 		// routes it (key_aliases.go)
 		if real := routeModelOf(r.Context()); real != "" {
 			model = real
+			body = rewriteModel(body, real)
 		}
 		noteAsked(r.Context(), model)
 		// Qoder 1.1.82 and later name no session: the one of its own

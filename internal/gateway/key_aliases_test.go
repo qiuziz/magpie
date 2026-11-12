@@ -19,7 +19,7 @@ func TestAliasBodyRoutesARawRequestWithoutRewritingIt(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set(provider.RawHeader, "1")
 	who := access.Identity{Aliases: map[string]string{"deepseek-v4.1-flash": "group/codebuddy"}}
-	r = aliasBody(r, who)
+	r = aliasRequest(r, who)
 	if got := routeModelOf(r.Context()); got != "group/codebuddy" {
 		t.Fatalf("routeModelOf = %q, want group/codebuddy", got)
 	}

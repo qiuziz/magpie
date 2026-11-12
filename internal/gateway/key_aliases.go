@@ -67,8 +67,9 @@ func withPath(r *http.Request, path string) *http.Request {
 
 // aliasBody swaps the model of a JSON body, every other byte as it was.
 // A raw request's bytes go to the vendor as the client sent them, so its
-// name is put in routeModelHeader instead: routing reads the alias, and
-// the body is left untouched (a gzip body is decoded only to read it).
+// route model rides in the request's context instead: routing reads the
+// alias, and the body is left untouched (a gzip body is decoded only to
+// read it).
 func aliasBody(r *http.Request, who access.Identity) *http.Request {
 	if r.Body == nil || r.Body == http.NoBody {
 		return r
